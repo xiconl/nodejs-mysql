@@ -1,7 +1,8 @@
 const express = require('express');
 const mysql = require('mysql');
 
-const port = 3000;
+const port = process.env.PORT || 3001;
+const PASSWORD = process.env.PASSWORD;
 
 const app = express();
 
