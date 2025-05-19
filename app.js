@@ -1,8 +1,17 @@
 const express = require('express');
-const mysql = require('mysql');
+const mysql = require('mysql2');
+const dotenv = require('dotenv');
+const bcrypt = require('bcryptjs');
+require('dotenv').config();
 
-const port = process.env.PORT || 3001;
-const PASSWORD = process.env.PASSWORD;
+const dbUrl = process.env.DB_CONNECTION_URL;
+if (!dbUrl) {
+    console.error("DB_CONNECTION_URL is not set in .env");
+    process.exit(1);
+}
+
+
+const port = process.env.PORT || 3000;
 
 const app = express();
 
@@ -14,61 +23,116 @@ app.use(express.static('views'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-//Route to get index.ejs
-app.get('/', (req, res) => {
-    res.render('index');
-});
-
-//Route to get login.ejs
-app.get('/login', (req, res) => {
-    res.render('login');
-});
-
-//Route to get signup.ejs
-app.get('/signup', (req, res) => {
-    res.render('signup');
-});
-
-//Route to post login.ejs
-app.post('/login', (req, res) => {
-    const { name, email, password } = req.body;
-    console.log('login data:', name, email, password)
-    res.send('You have sucessfully logged in');
-});
-
-//Route to post signup.ejs
-app.post('/signup', (req, res) => {
-    const { name, email, password } = req.body;
-    console.log('signup data:', name, email, password)
-    res.send('Signup successful');
-});
 
 //Database connection
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'Donaloy@007#',
-    port: 3306,
-    database: "form"
-})
+const parsedUrl = new URL(dbUrl);
 
-db.connect((err) => {
-    if(err){
-        console.log('Error connecting to the database:', err);
-        throw err;
+const dbConfig = {
+    host: parsedUrl.hostname,
+    user: parsedUrl.username,
+    password: parsedUrl.password,
+    port: parsedUrl.port,
+    database: parsedUrl.pathname.slice(1)
+}
+
+async function startServer() {
+    try {
+        const db = await mysql.createConnection(dbConfig).promise();
+        console.log('Connected to database')
+
+
+        // Create table if not exists
+        const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS form(
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255),
+        email VARCHAR(255),
+        password VARCHAR(255)
+    )
+    `;
+        await db.execute(createTableQuery);
+        console.log('Table "form" is ready');
+
+        //Route to get home page
+        app.get('/', (req, res) => {
+            res.render('index');
+        });
+
+        //Route to get signup page
+        app.get('/signup', (req, res) => {
+            res.render('signup');
+        });
+
+        //Route for signup handler
+        app.post('/signup', async (req, res) => {
+            const { name, email, password } = req.body;
+
+            if (!name || !email || !password) {
+                return res.status(400).send('All fields are required');
+            }            
+
+            try {
+                const [existingUsers] = await db.execute('SELECT * FROM form WHERE email = ?', [email]);
+                if (existingUsers.length > 0) {
+                    return res.status(400).send('User with this email already exists. Choose a different email.')
+                }
+
+                const hashedPassword = await bcrypt.hash(password, 12);
+
+                await db.execute('INSERT INTO form (name, email, password) VALUES (?, ?, ?)', [
+                    name,
+                    email,
+                    hashedPassword
+                ]);
+
+                return res.status(201).send('User registered successfully');
+            } catch (error) {
+                console.error(error);
+                return res.status(500).send('Server error')
+            }
+        });
+
+        //Route to get login page
+        app.get('/login', (req, res) => {
+            res.render('login');
+        });
+
+        //Route for login handler
+        app.post('/login', async (req, res) => {
+            const { email, password } = req.body;
+
+            if (!email || !password) {
+                return res.status(400).send('All fields are required');
+            }
+
+            try{
+                const [users] = await db.execute('SELECT * FROM form WHERE email = ? OR name = ?', [email, email]);
+                if(users.length === 0) {
+                    return res.status(400).send('User not found')
+                }
+
+                const user = users[0];
+                const isMatch = await bcrypt.compare(password, user.password);
+
+                if(isMatch) {
+                    return res.status(200).send('Login successful. Welcome' + ' ' + user.name)
+                } else {
+                    return res.status(400).send('Invalid password');
+                }
+            }catch (error) {
+                console.error(error);
+                return res.status(500).send('Database error');
+            };
+        });
+
+        app.listen(port, () => {
+            console.log(`Server is running on http://localhost:${port}/`)
+        })
+
+    } catch (err) {
+        console.error('Error connecting to the database:', err);
+        process.exit(1);
     }
-    console.log('Connected to the database');
+};
 
-    const table = `SELECT * FROM users`;
-    db.query(table, (err, result) => {
-        if(err){
-            console.log('Error creating databse:', err);
-        } else{
-           console.log('Database created');
-       } 
-    })
-});
-
-app.listen(port, () => {
-    console.log(`Server is running on port ${port}`)
-})
+startServer()
